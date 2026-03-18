@@ -19,7 +19,6 @@ class MVSR(nn.Module):
         )
         
         self.mv_refiner = MVRefiner()
-        self.partion_map = PartitionMap(mid)
         self.backward_resblocks = nn.Sequential(*[ResidualBlock(mid) for _ in range(blocks)])
         self.forward_resblocks = nn.Sequential(*[ResidualBlock(mid) for _ in range(blocks)])
         

@@ -1,21 +1,6 @@
 # Codec-Guided Video Super-Resolution
 
-<!-- **An efficient VSR framework that leverages "free" motion vectors from the H.264 codec instead of heavy optical flow networks.**
-
-This project operationalizes codec priors (Motion Vectors and Frame Types) to perform temporal alignment for video super-resolution. By extracting motion directly from the compressed bitstream, we avoid the computational cost of standard alignment methods while handling codec-specific challenges like missing P-frame backward references.
-
----
-
-## 🚀 Key Features
-
-- **Codec-Guided Alignment:** Replaces heavy optical flow estimation (e.g., SPyNet) with extracted H.264 Motion Vectors.
-- **P-Frame Proxy Logic:** Automatically fixes missing backward motion in P-frames by inverting forward vectors ($MV_{bwd} \approx -MV_{fwd}$).
-- **Second-Order Propagation:** Implements temporal chaining ($t \to t+1 \to t+2$) to bridge gaps where motion data is missing or unreliable.
-- **Efficient Architecture:** Designed for practical streaming contexts, operating directly on compressed inputs (CRF 25).
-
---- -->
-
-## 🛠️ Installation
+## Installation
 
 ### 1. Requirements
 

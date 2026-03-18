@@ -7,6 +7,7 @@ import cv2
 import torch
 from tqdm import tqdm
 from src.mvvsr.models.mv_vsr import MVSR
+from prettytable import PrettyTable
 
 def imread_rgb(path):
     bgr = cv2.imread(path, cv2.IMREAD_COLOR)
@@ -159,9 +160,10 @@ if __name__ == '__main__':
     
     ap.add_argument('--ablate_mvs', action='store_true', help="Ablation: Disable MVs")
     ap.add_argument('--ablate_second_order', action='store_true', help="Ablation: Disable 2nd Order MVs")
-    # 24.557 with no MVS and no second order order propogation
-    # 24.605 dB with no 2nd order MVs
-    # 24.662 with 2nd order MVs
+    # 24.599 with no MVS and no second order propogation
+    # 24.645 no 2nd order prop
+    # 24.652 no MVs
+    # 24.704 with 2nd order MVs
     args = ap.parse_args()
     
     run_sequence(args)

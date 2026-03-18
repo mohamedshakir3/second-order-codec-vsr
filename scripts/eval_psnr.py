@@ -1,98 +1,134 @@
-import os, argparse, glob, math, csv
-import numpy as np
 import cv2
+import numpy as np
+import os
+import glob
+import argparse
 from tqdm import tqdm
+from skimage.metrics import structural_similarity as ssim_func
 
-IMG_EXTS = {'.png', '.jpg', '.jpeg', '.bmp'}
+def bgr2ycbcr(img, only_y=True):
+    """
+    Implementation of bgr2ycbcr matching Matlab's behavior.
+    Input:  img (np.float32) in range [0, 1] or [0, 255]
+    Output: img (np.float32) in range [0, 255] (Y-channel is 16-235)
+    
+    Reference: https://github.com/XPixelGroup/BasicSR/blob/master/basicsr/utils/color_util.py#L186
+    """
+    in_img_type = img.dtype
+    img.astype(np.float32)
 
-def list_images(d, pattern="*"):
-    files = [p for p in glob.glob(os.path.join(d, pattern)) if os.path.splitext(p)[1].lower() in IMG_EXTS]
-    files.sort()
-    return files
+    if in_img_type != np.uint8:
+        img *= 255.
 
-def to_y_channel_rgb(rgb):
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
-    return ycrcb[..., 0]
+    if only_y:
+        rlt = np.dot(img, [24.966, 128.553, 65.481]) / 255.0 + 16.0
+    else:
+        # Full YCbCr conversion (if needed)
+        rlt = np.matmul(img, [[24.966, 112.0, -18.214], 
+                              [128.553, -74.203, -93.786],
+                              [65.481, -37.797, 112.0]]) / 255.0 + [16, 128, 128]
+        
+    if in_img_type == np.uint8:
+        rlt = rlt.round()
+    else:
+        rlt /= 255.
+        
+    return rlt.astype(in_img_type)
 
-def shave_border(img, shave):
-    if shave is None or shave <= 0:
-        return img
-    h, w = img.shape[:2]
-    if h <= 2 * shave or w <= 2 * shave:
-        return img
-    return img[shave:h - shave, shave:w - shave]
+def calculate_psnr(img1, img2, crop_border, input_order='HWC', test_y_channel=False):
+    """Calculate PSNR (Peak Signal-to-Noise Ratio)."""
+    assert img1.shape == img2.shape, (f'Image shapes are different: {img1.shape}, {img2.shape}.')
+    
+    if input_order not in ['HWC', 'CHW']:
+        raise ValueError(f'Wrong input_order {input_order}. Supported: HWC, CHW')
+        
+    img1 = img1.astype(np.float64)
+    img2 = img2.astype(np.float64)
 
-def psnr_from_arrays(a, b, maxv=255.0):
-    if a.shape != b.shape:
-        raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
-    diff = a.astype(np.float32) - b.astype(np.float32)
-    mse = float(np.mean(diff * diff))
-    if mse <= 1e-10:
-        return 99.0
-    return 20.0 * math.log10(maxv) - 10.0 * math.log10(mse)
+    if crop_border != 0:
+        if input_order == 'HWC':
+            img1 = img1[crop_border:-crop_border, crop_border:-crop_border, ...]
+            img2 = img2[crop_border:-crop_border, crop_border:-crop_border, ...]
+        else:
+            img1 = img1[..., crop_border:-crop_border, crop_border:-crop_border]
+            img2 = img2[..., crop_border:-crop_border, crop_border:-crop_border]
+
+    if test_y_channel:
+        img1 = to_y_channel(img1)
+        img2 = to_y_channel(img2)
+
+    mse = np.mean((img1 - img2)**2)
+    if mse == 0:
+        return float('inf')
+    return 20. * np.log10(255. / np.sqrt(mse))
+
+def calculate_ssim(img1, img2, crop_border, input_order='HWC', test_y_channel=False):
+    """Calculate SSIM (Structural Similarity)."""
+    assert img1.shape == img2.shape, (f'Image shapes are different: {img1.shape}, {img2.shape}.')
+    
+    if crop_border != 0:
+        if input_order == 'HWC':
+            img1 = img1[crop_border:-crop_border, crop_border:-crop_border, ...]
+            img2 = img2[crop_border:-crop_border, crop_border:-crop_border, ...]
+        else:
+            img1 = img1[..., crop_border:-crop_border, crop_border:-crop_border]
+            img2 = img2[..., crop_border:-crop_border, crop_border:-crop_border]
+
+    if test_y_channel:
+        img1 = to_y_channel(img1)
+        img2 = to_y_channel(img2)
+        
+    # SSIM from skimage assumes 2D input for grayscale
+    return ssim_func(img1, img2, data_range=255)
+
+def to_y_channel(img):
+    """Helper to handle shape and type for bgr2ycbcr"""
+    # Assume img is HWC, BGR, range [0, 255] float
+    img = img / 255. # normalize to [0,1] for the function
+    y = bgr2ycbcr(img, only_y=True)
+    y = y * 255. # scale back to [0, 255] for metrics
+    return y
 
 def main():
-    ap = argparse.ArgumentParser(description="Evaluate PSNR between SR frames and GT frames.")
-    ap.add_argument("--sr_dir", required=True, help="directory of SR frames (e.g., outputs from inference)")
-    ap.add_argument("--gt_dir", required=True, help="directory of GT HR frames (e.g., REDS val_sharp/<clip>)")
-    ap.add_argument("--mode", default="y", choices=["y", "rgb"], help="PSNR on Y channel (YCrCb) or RGB average")
-    ap.add_argument("--scale", type=int, default=4, help="upscale factor (used as default shave)")
-    ap.add_argument("--shave", type=int, default=None, help="border shave in pixels (defaults to --scale if not set)")
-    ap.add_argument("--csv", default="", help="optional path to write per-frame CSV metrics")
-    ap.add_argument("--pattern", default="*.png", help="glob pattern for frames (default: *.png)")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--sr_dir', type=str, required=True, help='Path to SR images')
+    parser.add_argument('--gt_dir', type=str, required=True, help='Path to GT images')
+    parser.add_argument('--crop_border', type=int, default=4, help='Crop border for each side')
+    parser.add_argument('--suffix', type=str, default='', help='Suffix for SR image name')
+    parser.add_argument('--test_y_channel', action='store_true', default=True, help='If True, convert to Y channel')
+    args = parser.parse_args()
 
-    shave = args.scale if args.shave is None else args.shave
+    sr_list = sorted(glob.glob(os.path.join(args.sr_dir, '*')))
+    gt_list = sorted(glob.glob(os.path.join(args.gt_dir, '*')))
 
-    sr_files = list_images(args.sr_dir, args.pattern)
-    gt_files = list_images(args.gt_dir, args.pattern)
-    if not sr_files or not gt_files:
-        raise SystemExit("No images found in one or both directories.")
+    IMG_EXTENSIONS = ['.png', '.jpg', '.jpeg']
+    sr_list = [x for x in sr_list if os.path.splitext(x)[1].lower() in IMG_EXTENSIONS]
+    gt_list = [x for x in gt_list if os.path.splitext(x)[1].lower() in IMG_EXTENSIONS]
 
-    sr_map = {os.path.basename(p): p for p in sr_files}
-    gt_map = {os.path.basename(p): p for p in gt_files}
-    names = sorted(set(sr_map.keys()) & set(gt_map.keys()))
-    if not names:
-        raise SystemExit("No overlapping filenames between SR and GT. Make sure names match (e.g., 00000000.png).")
+    assert len(sr_list) == len(gt_list), "Mismatch in number of SR and GT images"
 
-    rows, psnrs = [], []
-    for name in tqdm(names, desc="eval"):
-        sr_bgr = cv2.imread(sr_map[name], cv2.IMREAD_COLOR)
-        gt_bgr = cv2.imread(gt_map[name], cv2.IMREAD_COLOR)
-        if sr_bgr is None or gt_bgr is None:
-            continue
-        sr_rgb = cv2.cvtColor(sr_bgr, cv2.COLOR_BGR2RGB)
-        gt_rgb = cv2.cvtColor(gt_bgr, cv2.COLOR_BGR2RGB)
+    psnr_total = 0.
+    ssim_total = 0.
 
-        if args.mode == "y":
-            sr_y = shave_border(to_y_channel_rgb(sr_rgb), shave)
-            gt_y = shave_border(to_y_channel_rgb(gt_rgb), shave)
-            ps = psnr_from_arrays(sr_y, gt_y, maxv=255.0)
-        else:
-            sr_rgb = shave_border(sr_rgb, shave)
-            gt_rgb = shave_border(gt_rgb, shave)
-            ps = (
-                psnr_from_arrays(sr_rgb[..., 0], gt_rgb[..., 0])
-                + psnr_from_arrays(sr_rgb[..., 1], gt_rgb[..., 1])
-                + psnr_from_arrays(sr_rgb[..., 2], gt_rgb[..., 2])
-            ) / 3.0
+    print(f"Evaluating {len(sr_list)} pairs...")
+    print(f"Crop Border: {args.crop_border} | Y-Channel: {args.test_y_channel}")
 
-        psnrs.append(ps)
-        rows.append((name, ps))
+    for sr_path, gt_path in tqdm(zip(sr_list, gt_list), total=len(sr_list)):
+        # Read BGR
+        img_sr = cv2.imread(sr_path, cv2.IMREAD_COLOR).astype(np.float32)
+        img_gt = cv2.imread(gt_path, cv2.IMREAD_COLOR).astype(np.float32)
 
-    mean_psnr = float(np.mean(psnrs)) if psnrs else 0.0
-    print(f"Frames evaluated: {len(psnrs)} | Mean PSNR ({args.mode}, shave={shave}): {mean_psnr:.3f} dB")
+        psnr_val = calculate_psnr(img_sr, img_gt, crop_border=args.crop_border, test_y_channel=args.test_y_channel)
+        ssim_val = calculate_ssim(img_sr, img_gt, crop_border=args.crop_border, test_y_channel=args.test_y_channel)
 
-    if args.csv:
-        os.makedirs(os.path.dirname(args.csv), exist_ok=True)
-        with open(args.csv, "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["frame", f"psnr_{args.mode}"])
-            for name, ps in rows:
-                w.writerow([name, f"{ps:.6f}"])
-            w.writerow(["mean", f"{mean_psnr:.6f}"])
-        print("Wrote CSV:", args.csv)
+        psnr_total += psnr_val
+        ssim_total += ssim_val
 
-if __name__ == "__main__":
+    avg_psnr = psnr_total / len(sr_list)
+    avg_ssim = ssim_total / len(sr_list)
+
+    print(f'\nAverage PSNR: {avg_psnr:.4f} dB')
+    print(f'Average SSIM: {avg_ssim:.4f}')
+
+if __name__ == '__main__':
     main()

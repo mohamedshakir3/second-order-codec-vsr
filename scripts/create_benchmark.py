@@ -10,6 +10,7 @@ from pathlib import Path
 from tqdm import tqdm
 import shutil
 
+# CLIPS = ["calendar", "city", "foliage", "walk"]
 CLIPS = ["clip_000", "clip_011", "clip_015", "clip_020"]
 
 def encode_reds4_clip(hr_dir, out_mp4_path, scale=4, crf=25):
